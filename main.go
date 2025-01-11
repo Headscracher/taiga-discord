@@ -1,9 +1,18 @@
-package main;
-import dotenv "github.com/joho/godotenv"
-import "github.com/bwmarrin/discordgo"
-import "os"
-import "fmt"
-import "os/signal"
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/signal"
+	"sort"
+
+	"github.com/bwmarrin/discordgo"
+	dotenv "github.com/joho/godotenv"
+)
 
 func main() {
   dotenv.Load();
@@ -17,7 +26,7 @@ func main() {
 	})
   // check in channel for new thread
   discord.AddHandler(createThread);
-  discord.Identify.Intents = discordgo.IntentsGuildMessages;
+  discord.Identify.Intents = discordgo.IntentGuildMessages;
   err = discord.Open();
 
   if err != nil {
@@ -32,7 +41,6 @@ func main() {
 }
 
 func createThread(s *discordgo.Session, t *discordgo.MessageCreate) {
-  fmt.Println("Got a new thread in channel: " + t.ChannelID);
   thread := t.ChannelID;
   channel, err := s.Channel(thread);
   if err != nil {
@@ -43,24 +51,156 @@ func createThread(s *discordgo.Session, t *discordgo.MessageCreate) {
     return;
   }
   if (channel.MessageCount == 0) {
-
-    //get thread description
-    description := "";
-    if (channel.Topic != "") {
-      description = channel.Topic;
-    }
-    if (t.Thread.Topic != "") {
-      description = t.Thread.Topic;
-    }
-    println(description);
-    
-    
+    tasks := getTasks();
+    newTask := createTask(channel.Name, t.Content);
+    sortTasks(tasks, newTask);
   }
-  println(channel.MessageCount);
-  fmt.Println("Thread created: " + t.ID);
-  
 }
 
-func createTask(title string, description string) {
-  
+type Task struct {
+  Subject string `json:"subject"`
+  Description string `json:"description"`
+  Project int `json:"project"`
+  Status int `json:"status"`
+  KanbanOrder int `json:"kanban_order"`
+}
+
+type TaskResponse struct {
+  Id int `json:"id"`
+  Prio int `json:"kanban_order"`
+  Subject string `json:"subject"`
+}
+
+func getTasks() []TaskResponse {
+  authToken := getAuthToken();
+  req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/userstories?project=8&status=315", nil);
+  if err != nil {
+    panic(err);
+  }
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  client := &http.Client{};
+  resp, err := client.Do(req);
+  if err != nil {
+    panic(err);
+  }
+  defer resp.Body.Close();
+  var tasks []TaskResponse;
+  err = json.NewDecoder(resp.Body).Decode(&tasks);
+  if err != nil {
+    panic(err);
+  }
+  sort.Slice(tasks, func(i, j int) bool {
+    return tasks[i].Prio < tasks[j].Prio
+  });
+  return tasks;
+}
+
+type CreateTaskResponse struct {
+  Id int `json:"id"`
+}
+
+func createTask(title string, description string) int {
+  authToken := getAuthToken(); 
+  println(authToken);
+  task := Task{
+	  Subject: title,
+	  Description: description,
+	  Project: 8,
+	  Status: 315,
+	  KanbanOrder: 1,
+  }
+  body, err := json.Marshal(task);
+  if err != nil {
+    panic(err);
+  }
+  req, err := http.NewRequest("POST", os.Getenv("TAIGA_URL") + "/api/v1/userstories", bytes.NewBuffer(body));
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  req.Header.Set("Content-Type", "application/json");
+  client := &http.Client{};
+  resp, err := client.Do(req);
+  if err != nil {
+    panic(err);
+  }
+  defer resp.Body.Close();
+  var taskResponse CreateTaskResponse;
+  err = json.NewDecoder(resp.Body).Decode(&taskResponse);
+  if err != nil {
+    panic(err);
+  }
+  return taskResponse.Id;
+}
+
+type SortRequest struct {
+  Project int `json:"project_id"`
+  Stories []int `json:"bulk_userstories"`
+  Status int `json:"status_id"`
+}
+
+func sortTasks(tasks []TaskResponse, newTask int) {
+  var sortStories []int;
+  sortStories = append(sortStories, newTask);
+  for _, task := range tasks {
+    sortStories = append(sortStories, task.Id);
+  }
+  sortRequest := SortRequest{
+    Project: 8,
+    Stories: sortStories,
+    Status: 315,
+  }
+  body, err := json.Marshal(sortRequest);
+  if err != nil {
+    panic(err);
+  }
+  authToken := getAuthToken();
+  req, err := http.NewRequest("POST", os.Getenv("TAIGA_URL") + "/api/v1/userstories/bulk_update_kanban_order", bytes.NewBuffer(body));
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  req.Header.Set("Content-Type", "application/json");
+  client := &http.Client{};
+  resp, err := client.Do(req);
+  if err != nil {
+    panic(err);
+  }
+  respBytes, err := io.ReadAll(resp.Body);
+  if err != nil {
+    panic(err);
+  }
+  println(string(respBytes));
+  defer resp.Body.Close();
+}
+
+type Auth struct {
+  Type string `json:"type"`
+  Pass string `json:"password"`
+  Username string `json:"username"`
+}
+type AuthResponse struct {
+  Token string `json:"auth_token"`
+}
+
+func getAuthToken() string {
+  taigaUrl := os.Getenv("TAIGA_URL");
+  auth := Auth{
+    Type: "normal",
+    Pass: os.Getenv("TAIGA_PASSWORD"),
+    Username: os.Getenv("TAIGA_USERNAME"),
+  }
+  body, err := json.Marshal(auth);
+  if err != nil {
+    panic(err);
+  }
+  resp, err := http.Post(taigaUrl + "/api/v1/auth", "application/json", bytes.NewBuffer(body));
+  if err != nil {
+    panic(err);
+  }
+  defer resp.Body.Close();
+  var testRespone string;
+  resp.Body.Read([]byte(testRespone));
+  println(resp.StatusCode);
+  println(testRespone);
+  var authResp AuthResponse;
+  err = json.NewDecoder(resp.Body).Decode(&authResp);
+  if err != nil {
+    panic(err);
+  }
+  return authResp.Token;
 }
