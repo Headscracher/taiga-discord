@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,13 +10,19 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 
 	"github.com/bwmarrin/discordgo"
 	dotenv "github.com/joho/godotenv"
+	_ "github.com/mattn/go-sqlite3"
 )
+
+var db *sql.DB;
 
 func main() {
   dotenv.Load();
+  db = initializeDB();
+  defer db.Close();
   
   discord, err := discordgo.New("Bot " + os.Getenv("DISCORD_TOKEN"));
   if err != nil {
@@ -50,10 +57,12 @@ func createThread(s *discordgo.Session, t *discordgo.MessageCreate) {
   if (channel.ParentID != os.Getenv("DISCORD_CHANNEL_ID")) {
     return;
   }
-  if (channel.MessageCount == 0) {
+  if channel.MessageCount == 0 {
     tasks := getTasks();
-    newTask := createTask(channel.Name, t.Content);
+    newTask := createTask(t.Author.GlobalName, channel.Name, t.Content, channel.ID);
     sortTasks(tasks, newTask);
+  } else {
+    createComment(t.Author.GlobalName ,channel.ID, t.Content);
   }
 }
 
@@ -99,12 +108,12 @@ type CreateTaskResponse struct {
   Id int `json:"id"`
 }
 
-func createTask(title string, description string) int {
+func createTask(user string, title string, description string, threadId string) int {
   authToken := getAuthToken(); 
   println(authToken);
   task := Task{
 	  Subject: title,
-	  Description: description,
+    Description: "Created by " + user + ": \n\n" + description,
 	  Project: 8,
 	  Status: 315,
 	  KanbanOrder: 1,
@@ -127,7 +136,47 @@ func createTask(title string, description string) int {
   if err != nil {
     panic(err);
   }
+  _, err = db.Exec("INSERT INTO tasks (thread_id, task_id) VALUES (?, ?)", threadId, taskResponse.Id);
+  if err != nil {
+    panic(err);
+  }
   return taskResponse.Id;
+}
+
+type Comment struct {
+  Content string `json:"comment"`
+  Version int `json:"version"`
+}
+
+func createComment(user string ,threadId string, content string) {
+  row, err := db.Query("SELECT task_id FROM tasks WHERE thread_id = ?", threadId);
+  if err != nil {
+    panic(err); 
+  }
+  row.Next();
+  var taskId int;
+  err = row.Scan(&taskId);
+  if err != nil {
+    panic(err);
+  }
+  authToken := getAuthToken();
+  comment := Comment{
+    Content: "Comment from " + user + ": \n\n" + content,
+    Version: 1,
+  };
+  body, err := json.Marshal(comment);
+  if err != nil {
+    panic(err);
+  }
+  req, err := http.NewRequest("PATCH", os.Getenv("TAIGA_URL") + "/api/v1/userstories/" + strconv.Itoa(taskId), bytes.NewBuffer(body));
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  req.Header.Set("Content-Type", "application/json");
+  client := &http.Client{};
+  resp, err := client.Do(req);
+  if err != nil {
+    panic(err);
+  }
+  defer resp.Body.Close();
 }
 
 type SortRequest struct {
@@ -177,6 +226,18 @@ type AuthResponse struct {
   Token string `json:"auth_token"`
 }
 
+func initializeDB() *sql.DB{
+  db, err := sql.Open("sqlite3", "file:tasks.db")
+  if err != nil {
+    panic(err);
+  }
+  _, err = db.Exec("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id INTEGER, task_id INTEGER, UNIQUE(thread_id, task_id))");
+  if err != nil {
+    panic(err);
+  }
+  return db;
+}
+
 func getAuthToken() string {
   taigaUrl := os.Getenv("TAIGA_URL");
   auth := Auth{
@@ -193,10 +254,6 @@ func getAuthToken() string {
     panic(err);
   }
   defer resp.Body.Close();
-  var testRespone string;
-  resp.Body.Read([]byte(testRespone));
-  println(resp.StatusCode);
-  println(testRespone);
   var authResp AuthResponse;
   err = json.NewDecoder(resp.Body).Decode(&authResp);
   if err != nil {
