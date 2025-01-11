@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,9 +30,10 @@ func main() {
   discord.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		fmt.Println("Bot is ready")
 	})
-  // check in channel for new thread
-  discord.AddHandler(createThread);
-  discord.Identify.Intents = discordgo.IntentGuildMessages;
+  discord.AddHandler(createThreadEvent);
+  discord.AddHandler(changeMessageEvent);
+  discord.AddHandler(changeTopicEvent);
+  discord.Identify.Intents = discordgo.IntentGuilds | discordgo.IntentGuildMessages;
   err = discord.Open();
 
   if err != nil {
@@ -47,7 +47,168 @@ func main() {
   discord.Close();
 }
 
-func createThread(s *discordgo.Session, t *discordgo.MessageCreate) {
+func changeTopicEvent(s *discordgo.Session, t *discordgo.ThreadUpdate) {
+  thread := t.ID;
+  channel, err := s.Channel(thread);
+  if err != nil {
+    fmt.Println("Error getting channel: " + err.Error());
+    return;
+  }
+  if (channel.ParentID != os.Getenv("DISCORD_CHANNEL_ID")) {
+    return;
+  }
+  row, err := db.Query("SELECT task_id FROM tasks WHERE thread_id = ?", channel.ID);
+  if !row.Next() {
+    println("No task found");
+    return;
+  }
+  var taskId int;
+  err = row.Scan(&taskId);
+  if err != nil {
+    panic(err);
+  }
+  row.Close();
+  updateTask(taskId, "", &t.Name, nil);
+}
+
+func changeMessageEvent(s *discordgo.Session, m *discordgo.MessageUpdate) {
+  thread := m.ChannelID;
+  channel, err := s.Channel(thread);
+  if err != nil {
+    fmt.Println("Error getting channel: " + err.Error());
+    return;
+  }
+  if (channel.ParentID != os.Getenv("DISCORD_CHANNEL_ID")) {
+    return;
+  }
+  row, err := db.Query("SELECT task_id FROM tasks WHERE message_id = ?", m.ID);
+  if row.Next() {
+    var taskId int;
+    err = row.Scan(&taskId);
+    if err != nil {
+      panic(err);
+    }
+    row.Close();
+    updateTask(taskId, m.Author.GlobalName, nil , &m.Content);
+  } else {
+    row.Close();
+    row, err = db.Query("SELECT comment_id, task_id FROM comments WHERE message_id = ?", m.ID);
+    if row.Next() {
+      var commentId string;
+      var taskId int;
+      err = row.Scan(&commentId, &taskId);
+      if err != nil {
+        panic(err);
+      }
+      row.Close();
+      updateComment(commentId, taskId, m.Message);
+    }
+  }
+}
+
+type UpdateTaskSubjectRequest struct {
+  Subject string `json:"subject"`
+  Version int `json:"version"`
+}
+
+type UpdateTaskDescriptionRequest struct {
+  Description string `json:"description"`
+  Version int `json:"version"`
+}
+
+
+func getTaskVersion(taskId int) int {
+  authToken := getAuthToken();
+  req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/userstories/" + strconv.Itoa(taskId), nil);
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  client := &http.Client{};
+  resp, err := client.Do(req);
+  if err != nil {
+    panic(err);
+  }
+  defer resp.Body.Close();
+  var taskResponse TaskResponse;
+  err = json.NewDecoder(resp.Body).Decode(&taskResponse);
+  if err != nil {
+    panic(err);
+  }
+  return taskResponse.Version;
+}
+
+
+type NullableString struct {
+  val string
+}
+
+func updateTask(taskId int, user string, subject *string, content *string) {
+  authToken := getAuthToken();
+  version := getTaskVersion(taskId);
+  var body []byte;
+  var err error;
+  if content != nil {
+    description := "Created by " + user + ": \n\n" + *content;
+    task := UpdateTaskDescriptionRequest{
+      Description: description,
+      Version: version,
+    };
+    body, err = json.Marshal(task);
+  } else if subject != nil {
+    task := UpdateTaskSubjectRequest{
+      Subject: *subject,
+      Version: version,
+    }
+    body, err = json.Marshal(task);
+  } else {
+    panic("No content or subject provided");
+  }
+  if err != nil {
+    panic(err);
+  }
+  req, err := http.NewRequest("PATCH", os.Getenv("TAIGA_URL") + "/api/v1/userstories/" + strconv.Itoa(taskId), bytes.NewBuffer(body));
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  req.Header.Set("Content-Type", "application/json");
+  client := &http.Client{};
+  resp, err := client.Do(req);
+
+  if err != nil {
+    panic(err);
+  }
+
+  defer resp.Body.Close();
+}
+
+
+type EditComment struct {
+  Content string `json:"comment"`
+}
+
+func updateComment(commentId string, taskId int, message *discordgo.Message) {
+  authToken := getAuthToken();
+  comment := EditComment {
+    Content: "Comment from " + message.Author.GlobalName + ": \n\n" + message.Content,
+  };
+  body, err := json.Marshal(comment);
+  if err != nil {
+    panic(err);
+  }
+  req, err := http.NewRequest("POST", os.Getenv("TAIGA_URL") + "/api/v1/history/userstory/" +  strconv.Itoa(taskId) + "/edit_comment?id=" + commentId, bytes.NewBuffer(body));
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  req.Header.Set("Content-Type", "application/json");
+  client := &http.Client{};
+  resp, err := client.Do(req);
+  if err != nil {
+    panic(err);
+  }
+  _, err = db.Exec("UPDATE comments SET updated_at = ? WHERE comment_id = ?", message.EditedTimestamp, commentId); 
+  if err != nil{
+    panic(err);
+  }
+  defer resp.Body.Close();
+  
+  
+}
+
+func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
   thread := t.ChannelID;
   channel, err := s.Channel(thread);
   if err != nil {
@@ -59,10 +220,10 @@ func createThread(s *discordgo.Session, t *discordgo.MessageCreate) {
   }
   if channel.MessageCount == 0 {
     tasks := getTasks();
-    newTask := createTask(t.Author.GlobalName, channel.Name, t.Content, channel.ID);
+    newTask := createTask(t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID);
     sortTasks(tasks, newTask);
-  } else {
-    createComment(t.Author.GlobalName ,channel.ID, t.Content);
+  } else if t.Content != channel.Name {
+    createComment(t.Author.GlobalName, channel.ID, t.Message, t.Content);
   }
 }
 
@@ -78,6 +239,7 @@ type TaskResponse struct {
   Id int `json:"id"`
   Prio int `json:"kanban_order"`
   Subject string `json:"subject"`
+  Version int `json:"version"`
 }
 
 func getTasks() []TaskResponse {
@@ -108,9 +270,8 @@ type CreateTaskResponse struct {
   Id int `json:"id"`
 }
 
-func createTask(user string, title string, description string, threadId string) int {
+func createTask(user string, title string, description string, threadId string, messageId string) int {
   authToken := getAuthToken(); 
-  println(authToken);
   task := Task{
 	  Subject: title,
     Description: "Created by " + user + ": \n\n" + description,
@@ -136,7 +297,7 @@ func createTask(user string, title string, description string, threadId string) 
   if err != nil {
     panic(err);
   }
-  _, err = db.Exec("INSERT INTO tasks (thread_id, task_id) VALUES (?, ?)", threadId, taskResponse.Id);
+  _, err = db.Exec("INSERT INTO tasks (thread_id, task_id, message_id) VALUES (?, ?, ?)", threadId, taskResponse.Id, messageId);
   if err != nil {
     panic(err);
   }
@@ -148,17 +309,21 @@ type Comment struct {
   Version int `json:"version"`
 }
 
-func createComment(user string ,threadId string, content string) {
+func createComment(user string ,threadId string, message *discordgo.Message, content string) {
   row, err := db.Query("SELECT task_id FROM tasks WHERE thread_id = ?", threadId);
   if err != nil {
     panic(err); 
   }
-  row.Next();
+  if !row.Next() {
+    row.Close();
+    return;
+  }
   var taskId int;
   err = row.Scan(&taskId);
   if err != nil {
     panic(err);
   }
+  row.Close();
   authToken := getAuthToken();
   comment := Comment{
     Content: "Comment from " + user + ": \n\n" + content,
@@ -176,7 +341,47 @@ func createComment(user string ,threadId string, content string) {
   if err != nil {
     panic(err);
   }
+  commentId := getCommentID(taskId);
+
+  messageID, err := strconv.ParseInt(message.ID, 10, 64); 
+  if err != nil {
+    panic(err);
+  }
+  timestamp := messageID >> 22;
+  timestamp = timestamp + 1420070400000;
+  _, err = db.Exec("INSERT INTO comments (message_id, comment_id, task_id, updated_at) VALUES (?, ?, ?, ?)", message.ID, commentId, taskId, timestamp);
+  if err != nil {
+    panic(err);
+  }
   defer resp.Body.Close();
+}
+
+type CommentHistoryResponse struct {
+  Id string `json:"id"`
+  Content string `json:"comment"`
+  CreatedAt string `json:"created_at"`
+}
+
+func getCommentID(taskId int) string{
+  authToken := getAuthToken();
+  req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/history/userstory/" + strconv.Itoa(taskId), nil);
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  req.Header.Set("Content-Type", "application/json");
+  client := &http.Client{};
+  resp, err := client.Do(req);
+  if err != nil {
+    panic(err);
+  }
+  var historyEntries []CommentHistoryResponse;
+  err = json.NewDecoder(resp.Body).Decode(&historyEntries);
+  if err != nil {
+    panic(err);
+  }
+  sort.Slice(historyEntries, func(i, j int) bool {
+    return historyEntries[i].CreatedAt > historyEntries[j].CreatedAt
+  });
+  defer resp.Body.Close();
+  return historyEntries[0].Id;
 }
 
 type SortRequest struct {
@@ -209,11 +414,6 @@ func sortTasks(tasks []TaskResponse, newTask int) {
   if err != nil {
     panic(err);
   }
-  respBytes, err := io.ReadAll(resp.Body);
-  if err != nil {
-    panic(err);
-  }
-  println(string(respBytes));
   defer resp.Body.Close();
 }
 
@@ -227,14 +427,16 @@ type AuthResponse struct {
 }
 
 func initializeDB() *sql.DB{
-  db, err := sql.Open("sqlite3", "file:tasks.db")
+  db, err := sql.Open("sqlite3", "file:tasks.db?cache=shared")
   if err != nil {
     panic(err);
   }
-  _, err = db.Exec("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id INTEGER, task_id INTEGER, UNIQUE(thread_id, task_id))");
+  db.SetMaxOpenConns(1);
+  _, err = db.Exec("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id STRING, message_id STRING, task_id INTEGER, UNIQUE(thread_id, task_id))");
   if err != nil {
     panic(err);
   }
+  _, err = db.Exec("CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id STRING, comment_id STRING, task_id INTEGER, updated_at INTEGER, UNIQUE(message_id, comment_id))");
   return db;
 }
 
