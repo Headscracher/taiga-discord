@@ -590,7 +590,7 @@ type AuthResponse struct {
 }
 
 func initializeDB() *sql.DB{
-  db, err := sql.Open("sqlite3", "file:tasks.db?cache=shared")
+  db, err := sql.Open("sqlite3", "file:data/tasks.db?cache=shared")
   if err != nil {
     panic(err);
   }

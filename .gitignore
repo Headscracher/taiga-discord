@@ -1,2 +1,2 @@
 .env
-tasks.db
+data/tasks.db
