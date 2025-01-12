@@ -72,7 +72,7 @@ type StatusResponse struct {
 
 func setupStatuses(){
   authToken := getAuthToken();
-  req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/userstory-statuses?project=8", nil);
+  req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/userstory-statuses?project=" + os.Getenv("TAIGA_PROJECT_ID"), nil);
   if err != nil {
     panic(err);
   }
@@ -312,7 +312,7 @@ func getTasks(status int) []TaskResponse {
   var tasks []TaskResponse;
   page := 1;
   for true {
-    req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/userstories?project=8&status=" + strconv.Itoa(status) + "&page_size=100&page=" + strconv.Itoa(page), nil);
+    req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/userstories?project=" + os.Getenv("TAIGA_PROJECT_ID") +  "&status=" + strconv.Itoa(status) + "&page_size=100&page=" + strconv.Itoa(page), nil);
     if err != nil {
       panic(err);
     }
@@ -352,10 +352,14 @@ type CreateTaskResponse struct {
 func createTask(user string, title string, description string, threadId string, messageId string) int {
   authToken := getAuthToken(); 
   status_id := kanbanStatuses.findBySlug(os.Getenv("TAIGA_BACKLOG")).Id;
+  projectId, err := strconv.Atoi(os.Getenv("TAIGA_PROJECT_ID"));
+  if err != nil {
+    panic(err);
+  }
   task := Task{
 	  Subject: title,
     Description: "Created by " + user + ": \n\n" + description,
-	  Project: 8,
+	  Project: projectId,
 	  Status: status_id,
 	  KanbanOrder: 1,
   }
@@ -550,8 +554,12 @@ func sortTasks(tasks []TaskResponse, newTask int) {
   for _, task := range tasks {
     sortStories = append(sortStories, task.Id);
   }
+  projectId, err := strconv.Atoi(os.Getenv("TAIGA_PROJECT_ID"));
+  if err != nil {
+    panic(err);
+  }
   sortRequest := SortRequest{
-    Project: 8,
+    Project: projectId,
     Stories: sortStories,
     Status: 315,
   }
@@ -578,6 +586,7 @@ type Auth struct {
 }
 type AuthResponse struct {
   Token string `json:"auth_token"`
+  RefreshToken string `json:"refresh"`
 }
 
 func initializeDB() *sql.DB{
@@ -594,8 +603,46 @@ func initializeDB() *sql.DB{
   return db;
 }
 
+type AuthTokens struct {
+  AuthToken string
+  AuthExpires int64
+  RefreshToken string
+  RefreshExpires int64
+}
+
+type RefreshRequest struct {
+  RefreshToken string `json:"refresh"`
+}
+
+var authTokens AuthTokens;
+
 func getAuthToken() string {
+  if authTokens.AuthToken != ""  && authTokens.AuthExpires > time.Now().Unix(){
+    return authTokens.AuthToken;
+  }
   taigaUrl := os.Getenv("TAIGA_URL");
+  if authTokens.AuthToken != "" && authTokens.RefreshExpires > time.Now().Unix(){
+    refresh := RefreshRequest{
+      RefreshToken: authTokens.RefreshToken,
+    }
+    body, err := json.Marshal(refresh);
+    if err != nil {
+      panic(err);
+    }
+    resp, err := http.Post(taigaUrl + "/api/v1/auth/refresh", "application/json", bytes.NewBuffer(body));
+    if err != nil {
+      panic(err);
+    }
+    defer resp.Body.Close();
+    var authResp AuthResponse;
+    err = json.NewDecoder(resp.Body).Decode(&authResp);
+    if err != nil {
+      panic(err);
+    }
+    authTokens.AuthToken = authResp.Token;
+    authTokens.AuthExpires = time.Now().Add(time.Hour * 24).Unix();
+    return authTokens.AuthToken;
+  }
   auth := Auth{
     Type: "normal",
     Pass: os.Getenv("TAIGA_PASSWORD"),
@@ -615,5 +662,12 @@ func getAuthToken() string {
   if err != nil {
     panic(err);
   }
+  authTokens = AuthTokens{
+    AuthToken: authResp.Token,
+    AuthExpires: time.Now().Add(time.Hour * 24).Unix(),
+    RefreshToken: authResp.RefreshToken,
+    RefreshExpires: time.Now().Add(time.Hour * 24 * 8).Unix(),
+  }
+
   return authResp.Token;
 }
