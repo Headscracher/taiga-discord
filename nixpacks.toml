@@ -1,0 +1,6 @@
+[phases.setup]
+nixPkgs = ['...', 'gcc', 'sqlite']
+
+
+[phases.build]
+env = { CGO_ENABLED = "1" }
