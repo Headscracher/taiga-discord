@@ -1,2 +1,10 @@
 [phases.setup]
-nixPkgs = ['...', 'gcc', 'sqlite']
+nixPkgs = ['...', 'pkg-config', 'glibc', 'gcc', 'sqlite']
+
+[phases.build]
+env = { CGO_ENABLED = "1", CC = "gcc" }
+cmds = ["CGO_ENABLED=1 go build -o app"]
+
+[start]
+cmd = "ls -la && ldd ./app && /app/app"
+workingDirectory = "/app"
