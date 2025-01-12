@@ -1,6 +1,12 @@
 [phases.setup]
 nixPkgs = ['...', 'gcc', 'sqlite']
 
-
 [phases.build]
+cmds = ["CGO_ENABLED=1 go build -o app"]
 env = { CGO_ENABLED = "1" }
+
+
+[start]
+cmd = "./app"
+
+
