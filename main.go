@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	dotenv "github.com/joho/godotenv"
@@ -18,10 +20,24 @@ import (
 
 var db *sql.DB;
 
+type Status struct {
+  Name string
+  Slug string
+  Id int 
+}
+
+type KanbanStatuses []Status;
+var kanbanStatuses KanbanStatuses;
+
 func main() {
   dotenv.Load();
   db = initializeDB();
   defer db.Close();
+
+  kanbanStatuses = append(kanbanStatuses, Status{Name: "Backlog", Slug: os.Getenv("TAIGA_BACKLOG")});
+  kanbanStatuses = append(kanbanStatuses, Status{Name: "In Progress", Slug: os.Getenv("TAIGA_IN_PROGRESS")});
+  kanbanStatuses = append(kanbanStatuses, Status{Name: "Completed", Slug: os.Getenv("TAIGA_COMPLETED")});
+  setupStatuses();
   
   discord, err := discordgo.New("Bot " + os.Getenv("DISCORD_TOKEN"));
   if err != nil {
@@ -40,11 +56,48 @@ func main() {
     panic(err);
   }
 
+  go checkStatuses(discord);
+
   //close on ctrl-c
   c := make(chan os.Signal, 1)
   signal.Notify(c, os.Interrupt)
   <-c
   discord.Close();
+}
+
+type StatusResponse struct {
+  Id int `json:"id"`
+  Slug string `json:"slug"`
+}
+
+func setupStatuses(){
+  authToken := getAuthToken();
+  req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/userstory-statuses?project=8", nil);
+  if err != nil {
+    panic(err);
+  }
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  client := &http.Client{};
+  resp, err := client.Do(req);
+  if err != nil {
+    panic(err);
+  }
+  defer resp.Body.Close();
+  var statuses []StatusResponse;
+  err = json.NewDecoder(resp.Body).Decode(&statuses);
+  if err != nil {
+    panic(err);
+  }
+  OUTER:
+  for i, kanbanStatus := range kanbanStatuses {
+    for _ , status := range statuses { 
+      if status.Slug == kanbanStatus.Slug {
+        kanbanStatuses[i].Id = status.Id;
+        continue OUTER;
+      }
+    }
+    panic("Could not find status " + kanbanStatus.Slug);
+  }
 }
 
 func changeTopicEvent(s *discordgo.Session, t *discordgo.ThreadUpdate) {
@@ -208,6 +261,16 @@ func updateComment(commentId string, taskId int, message *discordgo.Message) {
   
 }
 
+
+func (s *KanbanStatuses) findBySlug(slug string) Status {
+  for _, status := range *s {
+    if status.Slug == slug {
+      return status;
+    }
+  }
+  panic("Could not find status " + slug);
+}
+
 func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
   thread := t.ChannelID;
   channel, err := s.Channel(thread);
@@ -219,7 +282,8 @@ func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
     return;
   }
   if channel.MessageCount == 0 {
-    tasks := getTasks();
+    status := kanbanStatuses.findBySlug(os.Getenv("TAIGA_BACKLOG")).Id;
+    tasks := getTasks(status);
     newTask := createTask(t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID);
     sortTasks(tasks, newTask);
   } else if t.Content != channel.Name {
@@ -240,25 +304,40 @@ type TaskResponse struct {
   Prio int `json:"kanban_order"`
   Subject string `json:"subject"`
   Version int `json:"version"`
+  Status int `json:"status"`
 }
 
-func getTasks() []TaskResponse {
+func getTasks(status int) []TaskResponse {
   authToken := getAuthToken();
-  req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/userstories?project=8&status=315", nil);
-  if err != nil {
-    panic(err);
-  }
-  req.Header.Set("Authorization", "Bearer " + authToken);
-  client := &http.Client{};
-  resp, err := client.Do(req);
-  if err != nil {
-    panic(err);
-  }
-  defer resp.Body.Close();
   var tasks []TaskResponse;
-  err = json.NewDecoder(resp.Body).Decode(&tasks);
-  if err != nil {
-    panic(err);
+  page := 1;
+  for true {
+    req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/userstories?project=8&status=" + strconv.Itoa(status) + "&page_size=100&page=" + strconv.Itoa(page), nil);
+    if err != nil {
+      panic(err);
+    }
+    req.Header.Set("Authorization", "Bearer " + authToken);
+    client := &http.Client{};
+    resp, err := client.Do(req);
+    if err != nil {
+      panic(err);
+    }
+    defer resp.Body.Close();
+    var taskResponse []TaskResponse;
+    err = json.NewDecoder(resp.Body).Decode(&taskResponse);
+    if err != nil {
+      panic(err);
+    }
+    tasks = append(tasks, taskResponse...);
+    itemCount, err := strconv.Atoi(resp.Header.Get("x-pagination-count"));
+    if err != nil {
+      panic(err);
+    }
+    pageCount := math.Ceil(float64(itemCount)/100);
+    if itemCount <= 100 || int(pageCount) == page {
+      break;
+    }
+    page += 1;
   }
   sort.Slice(tasks, func(i, j int) bool {
     return tasks[i].Prio < tasks[j].Prio
@@ -272,11 +351,12 @@ type CreateTaskResponse struct {
 
 func createTask(user string, title string, description string, threadId string, messageId string) int {
   authToken := getAuthToken(); 
+  status_id := kanbanStatuses.findBySlug(os.Getenv("TAIGA_BACKLOG")).Id;
   task := Task{
 	  Subject: title,
     Description: "Created by " + user + ": \n\n" + description,
 	  Project: 8,
-	  Status: 315,
+	  Status: status_id,
 	  KanbanOrder: 1,
   }
   body, err := json.Marshal(task);
@@ -297,7 +377,7 @@ func createTask(user string, title string, description string, threadId string, 
   if err != nil {
     panic(err);
   }
-  _, err = db.Exec("INSERT INTO tasks (thread_id, task_id, message_id) VALUES (?, ?, ?)", threadId, taskResponse.Id, messageId);
+  _, err = db.Exec("INSERT INTO tasks (thread_id, task_id, status_id, message_id) VALUES (?, ?, ?, ?)", threadId, taskResponse.Id, status_id, messageId);
   if err != nil {
     panic(err);
   }
@@ -307,6 +387,80 @@ func createTask(user string, title string, description string, threadId string, 
 type Comment struct {
   Content string `json:"comment"`
   Version int `json:"version"`
+}
+
+func getTask(taskId int) TaskResponse {
+  authToken := getAuthToken();
+  req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL") + "/api/v1/userstories/" + strconv.Itoa(taskId), nil);
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  client := &http.Client{};
+  resp, err := client.Do(req);
+  if err != nil {
+    panic(err);
+  }
+  defer resp.Body.Close();
+  var taskResponse TaskResponse;
+  err = json.NewDecoder(resp.Body).Decode(&taskResponse);
+  if err != nil {
+    panic(err);
+  }
+  return taskResponse;
+}
+
+func checkStatuses(discord *discordgo.Session) {
+  for range time.Tick(time.Minute * 1) {
+    for _, status := range kanbanStatuses { 
+      checkTaskStatus(status.Id, discord);
+    }
+  }
+}
+
+type StatusUpdate struct {
+  TaskId int
+  ThreadId string
+  Status Status
+}
+
+func checkTaskStatus(status int, discord *discordgo.Session) {
+  tasks := getTasks(status);
+  row, err := db.Query("SELECT task_id, thread_id FROM tasks WHERE status_id = ?", status);
+  if err != nil {
+    panic(err);
+  }
+  var statusUpdate []StatusUpdate;
+  OUTER:
+  for row.Next() {
+    var taskId int;
+    var threadId string;
+    err = row.Scan(&taskId, &threadId);
+    if err != nil {
+      panic(err);
+    }
+    for _, task := range tasks {
+      if task.Id == taskId {
+        continue OUTER;
+      }
+    }
+    task := getTask(taskId);
+    for _, status := range kanbanStatuses {
+      if status.Id == task.Status {
+        statusUpdate = append(statusUpdate, StatusUpdate{
+          TaskId: taskId,
+          ThreadId: threadId,
+          Status: status,
+        });
+        break;
+      }
+    }
+  }
+  row.Close();
+  for _, update := range statusUpdate {
+    discord.ChannelMessageSend(update.ThreadId, "Task status has been updated to \"" + update.Status.Name + "\"");
+    _, err = db.Exec("UPDATE tasks SET status_id = ? WHERE task_id = ?", update.Status.Id, update.TaskId);
+    if err != nil {
+      panic(err);
+    }
+  }
 }
 
 func createComment(user string ,threadId string, message *discordgo.Message, content string) {
@@ -432,7 +586,7 @@ func initializeDB() *sql.DB{
     panic(err);
   }
   db.SetMaxOpenConns(1);
-  _, err = db.Exec("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id STRING, message_id STRING, task_id INTEGER, UNIQUE(thread_id, task_id))");
+  _, err = db.Exec("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id STRING, message_id STRING, task_id INTEGER, status_id INTEGER, UNIQUE(thread_id, task_id))");
   if err != nil {
     panic(err);
   }
