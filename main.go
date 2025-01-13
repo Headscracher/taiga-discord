@@ -5,12 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/signal"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -134,6 +137,17 @@ func changeMessageEvent(s *discordgo.Session, m *discordgo.MessageUpdate) {
   if (channel.ParentID != os.Getenv("DISCORD_CHANNEL_ID")) {
     return;
   }
+  attachments := "";
+  if len(m.Attachments) > 0{
+    attachments = "\n\nAttachments:";
+  }
+  for _, attachment := range m.Attachments  {
+    mdType := "[";
+    if strings.HasPrefix(attachment.ContentType, "image") {
+      mdType = "![";
+    }
+    attachments += "\n" + mdType + attachment.Filename + "](" + attachment.URL + ")";
+  }
   row, err := db.Query("SELECT task_id FROM tasks WHERE message_id = ?", m.ID);
   if row.Next() {
     var taskId int;
@@ -142,7 +156,8 @@ func changeMessageEvent(s *discordgo.Session, m *discordgo.MessageUpdate) {
       panic(err);
     }
     row.Close();
-    updateTask(taskId, m.Author.GlobalName, nil , &m.Content);
+    content := m.Content + attachments;
+    updateTask(taskId, m.Author.GlobalName, nil , &content);
   } else {
     row.Close();
     row, err = db.Query("SELECT comment_id, task_id FROM comments WHERE message_id = ?", m.ID);
@@ -154,7 +169,7 @@ func changeMessageEvent(s *discordgo.Session, m *discordgo.MessageUpdate) {
         panic(err);
       }
       row.Close();
-      updateComment(commentId, taskId, m.Message);
+      updateComment(commentId, taskId, m.Message, attachments);
     }
   }
 }
@@ -235,10 +250,10 @@ type EditComment struct {
   Content string `json:"comment"`
 }
 
-func updateComment(commentId string, taskId int, message *discordgo.Message) {
+func updateComment(commentId string, taskId int, message *discordgo.Message, attachments string) {
   authToken := getAuthToken();
   comment := EditComment {
-    Content: "Comment from " + message.Author.GlobalName + ": \n\n" + message.Content,
+    Content: "Comment from " + message.Author.GlobalName + ": \n\n" + message.Content + attachments,
   };
   body, err := json.Marshal(comment);
   if err != nil {
@@ -281,14 +296,74 @@ func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
   if (channel.ParentID != os.Getenv("DISCORD_CHANNEL_ID")) {
     return;
   }
+  attachments := "";
+  if len(t.Attachments) > 0{
+    attachments = "\n\nAttachments:";
+  }
+  for _, attachment := range t.Attachments  {
+    mdType := "[";
+    if strings.HasPrefix(attachment.ContentType, "image") {
+      mdType = "![";
+    }
+    attachments += "\n" + mdType + attachment.Filename + "](" + attachment.URL + ")";
+  }
   if channel.MessageCount == 0 {
     status := kanbanStatuses.findBySlug(os.Getenv("TAIGA_BACKLOG")).Id;
     tasks := getTasks(status);
-    newTask := createTask(t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID);
+    newTask := createTask(t.Author.GlobalName, channel.Name, t.Content + attachments, channel.ID, t.ID);
     sortTasks(tasks, newTask, status);
   } else if t.Content != channel.Name {
-    createComment(t.Author.GlobalName, channel.ID, t.Message, t.Content);
+    createComment(t.Author.GlobalName, channel.ID, t.Message, t.Content + attachments);
   }
+}
+
+func attachFile(fileName string, url string, taskId int){
+  fileRequest, err := http.Get(url);
+  if err != nil {
+    panic(err);
+  }
+  file, err := io.ReadAll(fileRequest.Body);
+  if err != nil {
+    panic(err);
+  }
+  authToken := getAuthToken();
+  formData := new(bytes.Buffer);
+  writer := multipart.NewWriter(formData);
+  part, err := writer.CreateFormFile("attached_file", fileName);
+  if err != nil {
+    panic(err);
+  }
+  _, err = part.Write(file);
+  if err != nil {
+    panic(err);
+  }
+  err = writer.WriteField("object_id", strconv.Itoa(taskId));
+  if err != nil {
+    panic(err);
+  }
+  err = writer.WriteField("project", os.Getenv("TAIGA_PROJECT_ID"));
+  if err != nil {
+    panic(err);
+  }
+  err = writer.Close();
+  if err != nil {
+    panic(err);
+  }
+  println("Attaching file " + fileName + " to task " + strconv.Itoa(taskId));
+  req, err := http.NewRequest("POST", os.Getenv("TAIGA_URL") + "/api/v1/userstories/attachments", formData);
+  req.Header.Set("Authorization", "Bearer " + authToken);
+  req.Header.Set("Content-Type", writer.FormDataContentType())
+  client := &http.Client{};
+  resp, err := client.Do(req);
+  if err != nil {
+    panic(err);
+  }
+  data, err := io.ReadAll(resp.Body);
+  if err != nil {
+    panic(err);
+  }
+  println(string(data));
+  defer resp.Body.Close();
 }
 
 type Task struct {
