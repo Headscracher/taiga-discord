@@ -285,7 +285,7 @@ func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
     status := kanbanStatuses.findBySlug(os.Getenv("TAIGA_BACKLOG")).Id;
     tasks := getTasks(status);
     newTask := createTask(t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID);
-    sortTasks(tasks, newTask);
+    sortTasks(tasks, newTask, status);
   } else if t.Content != channel.Name {
     createComment(t.Author.GlobalName, channel.ID, t.Message, t.Content);
   }
@@ -548,7 +548,7 @@ type SortRequest struct {
   Status int `json:"status_id"`
 }
 
-func sortTasks(tasks []TaskResponse, newTask int) {
+func sortTasks(tasks []TaskResponse, newTask int, status int) {
   var sortStories []int;
   sortStories = append(sortStories, newTask);
   for _, task := range tasks {
@@ -561,7 +561,7 @@ func sortTasks(tasks []TaskResponse, newTask int) {
   sortRequest := SortRequest{
     Project: projectId,
     Stories: sortStories,
-    Status: 315,
+    Status: status,
   }
   body, err := json.Marshal(sortRequest);
   if err != nil {
