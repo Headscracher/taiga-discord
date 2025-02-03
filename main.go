@@ -618,6 +618,17 @@ OUTER:
 		if err != nil {
 			panic(err)
 		}
+
+		if update.Status.Name == "Completed" {
+			val := true
+			edit := &discordgo.ChannelEdit{
+				Archived: &val,
+			}
+			_, err = discord.ChannelEdit(update.ThreadId, edit)
+			if err != nil {
+				panic(err)
+			}
+		}
 	}
 }
 
