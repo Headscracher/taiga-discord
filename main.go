@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -29,31 +30,47 @@ type Status struct {
 	Id   int
 }
 
-type KanbanStatuses []Status
+type KanbanStatuses map[int][]Status
 
-var kanbanStatuses KanbanStatuses
+var kanbanStatuses KanbanStatuses = make(KanbanStatuses)
+
+var channelProjects map[string]int = make(map[string]int)
 
 func main() {
 	dotenv.Load()
 	db = initializeDB()
 	defer db.Close()
 
-	kanbanStatuses = append(kanbanStatuses, Status{Name: "Backlog", Slug: os.Getenv("TAIGA_BACKLOG")})
-	kanbanStatuses = append(kanbanStatuses, Status{Name: "In Progress", Slug: os.Getenv("TAIGA_IN_PROGRESS")})
-	kanbanStatuses = append(kanbanStatuses, Status{Name: "Completed", Slug: os.Getenv("TAIGA_COMPLETED")})
-	setupStatuses()
+
+  projects := strings.Split(os.Getenv("TAIGA_PROJECTS"), ",");
+  for _, project := range projects {
+    var projectStatuses []Status
+    projectId, err := strconv.Atoi(project)
+    if err != nil {
+      panic(err)
+    }
+    channelId := os.Getenv(project + "_CHANNEL_ID")
+    channelProjects[channelId] = projectId 
+    projectStatuses = append(projectStatuses, Status{Name: "Backlog", Slug: os.Getenv(project + "_BACKLOG")})
+    projectStatuses = append(projectStatuses, Status{Name: "In Progress", Slug: os.Getenv(project + "_IN_PROGRESS")})
+    projectStatuses = append(projectStatuses, Status{Name: "Completed", Slug: os.Getenv(project + "_COMPLETED")})
+    kanbanStatuses[projectId] = projectStatuses
+    setupStatuses(projectId)
+  }
 
 	discord, err := discordgo.New("Bot " + os.Getenv("DISCORD_TOKEN"))
+	discord.AddHandler(changeMessageEvent)
+	discord.AddHandler(changeTopicEvent)
+  discord.AddHandler(createThreadEvent)
+	discord.Identify.Intents = discordgo.IntentGuilds | discordgo.IntentGuildMessages
+
 	if err != nil {
 		panic(err)
 	}
 	discord.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		fmt.Println("Bot is ready")
 	})
-	discord.AddHandler(createThreadEvent)
-	discord.AddHandler(changeMessageEvent)
-	discord.AddHandler(changeTopicEvent)
-	discord.Identify.Intents = discordgo.IntentGuilds | discordgo.IntentGuildMessages
+
 	err = discord.Open()
 
 	if err != nil {
@@ -74,9 +91,9 @@ type StatusResponse struct {
 	Slug string `json:"slug"`
 }
 
-func setupStatuses() {
+func setupStatuses(projectId int) {
 	authToken := getAuthToken()
-	req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL")+"/api/v1/userstory-statuses?project="+os.Getenv("TAIGA_PROJECT_ID"), nil)
+	req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL")+"/api/v1/userstory-statuses?project="+strconv.Itoa(projectId), nil)
 	if err != nil {
 		panic(err)
 	}
@@ -93,10 +110,10 @@ func setupStatuses() {
 		panic(err)
 	}
 OUTER:
-	for i, kanbanStatus := range kanbanStatuses {
+	for i, kanbanStatus := range kanbanStatuses[projectId] {
 		for _, status := range statuses {
 			if status.Slug == kanbanStatus.Slug {
-				kanbanStatuses[i].Id = status.Id
+				kanbanStatuses[projectId][i].Id = status.Id
 				continue OUTER
 			}
 		}
@@ -111,7 +128,8 @@ func changeTopicEvent(s *discordgo.Session, t *discordgo.ThreadUpdate) {
 		fmt.Println("Error getting channel: " + err.Error())
 		return
 	}
-	if channel.ParentID != os.Getenv("DISCORD_CHANNEL_ID") {
+  _, exists := channelProjects[channel.ParentID]
+	if !exists {
 		return
 	}
 	row, err := db.Query("SELECT task_id FROM tasks WHERE thread_id = ?", channel.ID)
@@ -128,15 +146,22 @@ func changeTopicEvent(s *discordgo.Session, t *discordgo.ThreadUpdate) {
 	updateTask(taskId, "", &t.Name, nil)
 }
 
-func changeMessageEvent(s *discordgo.Session, m *discordgo.MessageUpdate) {
-	thread := m.ChannelID
+func getProjectId(s *discordgo.Session, thread string) (int, error) {
 	channel, err := s.Channel(thread)
 	if err != nil {
-		fmt.Println("Error getting channel: " + err.Error())
-		return
+    return 0, err;
 	}
-	if channel.ParentID != os.Getenv("DISCORD_CHANNEL_ID") {
-		return
+  project, ok := channelProjects[channel.ParentID]
+  if !ok {
+    return 0, errors.New("Could not find project")
+  }
+  return project, nil 
+}
+
+func changeMessageEvent(s *discordgo.Session, m *discordgo.MessageUpdate) {
+  projectId, err := getProjectId(s, m.ChannelID)
+  if err != nil {
+    return  
 	}
 	attachments := ""
 	if len(m.Attachments) > 0 {
@@ -155,7 +180,7 @@ func changeMessageEvent(s *discordgo.Session, m *discordgo.MessageUpdate) {
 			if strings.HasPrefix(attachment.ContentType, "image") {
 				mdType = "!["
 			}
-			uploadedAttachment := attachFile(attachment, taskId, m.ID)
+			uploadedAttachment := attachFile(projectId, attachment, taskId, m.ID)
 			attachments += "\n" + mdType + attachment.Filename + "](" + uploadedAttachment + ")"
 		}
 		content := m.Content + attachments
@@ -177,7 +202,7 @@ func changeMessageEvent(s *discordgo.Session, m *discordgo.MessageUpdate) {
 				if strings.HasPrefix(attachment.ContentType, "image") {
 					mdType = "!["
 				}
-				uploadedAttachment := attachFile(attachment, taskId, m.ID)
+				uploadedAttachment := attachFile(projectId, attachment, taskId, m.ID)
 				attachments += "\n" + mdType + attachment.Filename + "](" + uploadedAttachment + ")"
 			}
 			updateComment(commentId, taskId, m.Message, attachments)
@@ -284,8 +309,8 @@ func updateComment(commentId string, taskId int, message *discordgo.Message, att
 
 }
 
-func (s *KanbanStatuses) findBySlug(slug string) Status {
-	for _, status := range *s {
+func (s *KanbanStatuses) findBySlug(projectId int, slug string) Status {
+	for _, status := range (*s)[projectId] {
 		if status.Slug == slug {
 			return status
 		}
@@ -293,27 +318,28 @@ func (s *KanbanStatuses) findBySlug(slug string) Status {
 	panic("Could not find status " + slug)
 }
 
-func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
+func createThreadEvent (s *discordgo.Session, t *discordgo.MessageCreate) {
 	thread := t.ChannelID
+  projectId, err := getProjectId(s, thread)
+	if err != nil {
+		return
+	}
 	channel, err := s.Channel(thread)
 	if err != nil {
 		fmt.Println("Error getting channel: " + err.Error())
 		return
 	}
-	if channel.ParentID != os.Getenv("DISCORD_CHANNEL_ID") {
-		return
-	}
 	if channel.MessageCount == 0 {
-		status := kanbanStatuses.findBySlug(os.Getenv("TAIGA_BACKLOG")).Id
-		tasks := getTasks(status)
-		newTask := createTask(t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID)
-		sortTasks(tasks, newTask, status)
+		status := kanbanStatuses.findBySlug(projectId, os.Getenv(strconv.Itoa(projectId) + "_BACKLOG")).Id
+		tasks := getTasks(projectId, status)
+		newTask := createTask(projectId, t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID)
+		sortTasks(projectId, tasks, newTask, status)
 		attachments := ""
 		if len(t.Attachments) > 0 {
 			attachments = "\n\nAttachments:"
 		}
 		for _, attachment := range t.Attachments {
-			uploadedAttachment := attachFile(attachment, newTask, t.ID)
+			uploadedAttachment := attachFile(projectId, attachment, newTask, t.ID)
 			mdType := "["
 			if strings.HasPrefix(attachment.ContentType, "image") {
 				mdType = "!["
@@ -323,7 +349,7 @@ func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
 		updatedContent := t.Content + attachments
 		updateTask(newTask, t.Author.GlobalName, nil, &updatedContent)
 	} else if t.Content != channel.Name {
-		createComment(t.Author.GlobalName, channel.ID, t.Message, t.Content, t.ID, t.Attachments)
+		createComment(projectId, t.Author.GlobalName, channel.ID, t.Message, t.Content, t.ID, t.Attachments)
 	}
 }
 
@@ -332,7 +358,7 @@ type AttachmentResponse struct {
 	Preview string `json:"preview_url"`
 }
 
-func attachFile(attachment *discordgo.MessageAttachment, taskId int, messageId string) string {
+func attachFile(projectId int, attachment *discordgo.MessageAttachment, taskId int, messageId string) string {
 	row, err := db.Query("SELECT file_url FROM uploads WHERE message_id = ? AND file_id = ? AND task_id = ?", messageId, attachment.ID, taskId)
 	if err != nil {
 		panic(err)
@@ -370,7 +396,7 @@ func attachFile(attachment *discordgo.MessageAttachment, taskId int, messageId s
 	if err != nil {
 		panic(err)
 	}
-	err = writer.WriteField("project", os.Getenv("TAIGA_PROJECT_ID"))
+	err = writer.WriteField("project", strconv.Itoa(projectId))
 	if err != nil {
 		panic(err)
 	}
@@ -461,12 +487,12 @@ type TaskResponse struct {
 	Status  int    `json:"status"`
 }
 
-func getTasks(status int) []TaskResponse {
+func getTasks(projectId int, status int) []TaskResponse {
 	authToken := getAuthToken()
 	var tasks []TaskResponse
 	page := 1
 	for true {
-		req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL")+"/api/v1/userstories?project="+os.Getenv("TAIGA_PROJECT_ID")+"&status="+strconv.Itoa(status)+"&page_size=100&page="+strconv.Itoa(page), nil)
+		req, err := http.NewRequest("GET", os.Getenv("TAIGA_URL")+"/api/v1/userstories?project="+strconv.Itoa(projectId)+"&status="+strconv.Itoa(status)+"&page_size=100&page="+strconv.Itoa(page), nil)
 		if err != nil {
 			panic(err)
 		}
@@ -503,13 +529,9 @@ type CreateTaskResponse struct {
 	Id int `json:"id"`
 }
 
-func createTask(user string, title string, description string, threadId string, messageId string) int {
+func createTask(projectId int, user string, title string, description string, threadId string, messageId string) int {
 	authToken := getAuthToken()
-	status_id := kanbanStatuses.findBySlug(os.Getenv("TAIGA_BACKLOG")).Id
-	projectId, err := strconv.Atoi(os.Getenv("TAIGA_PROJECT_ID"))
-	if err != nil {
-		panic(err)
-	}
+	status_id := kanbanStatuses.findBySlug(projectId, os.Getenv(strconv.Itoa(projectId) + "_BACKLOG")).Id
 	task := Task{
 		Subject:     title,
 		Description: "Created by " + user + ": \n\n" + description,
@@ -567,9 +589,11 @@ func getTask(taskId int) TaskResponse {
 
 func checkStatuses(discord *discordgo.Session) {
 	for range time.Tick(time.Minute * 1) {
-		for _, status := range kanbanStatuses {
-			checkTaskStatus(status.Id, discord)
-		}
+    for projectId, projectStatuses := range kanbanStatuses {
+      for _, status := range projectStatuses {
+        checkTaskStatus(projectId, status.Id, discord)
+      }
+    }
 	}
 }
 
@@ -579,8 +603,8 @@ type StatusUpdate struct {
 	Status   Status
 }
 
-func checkTaskStatus(status int, discord *discordgo.Session) {
-	tasks := getTasks(status)
+func checkTaskStatus(projectId int, status int, discord *discordgo.Session) {
+	tasks := getTasks(projectId, status)
 	row, err := db.Query("SELECT task_id, thread_id FROM tasks WHERE status_id = ?", status)
 	if err != nil {
 		panic(err)
@@ -600,7 +624,7 @@ OUTER:
 			}
 		}
 		task := getTask(taskId)
-		for _, status := range kanbanStatuses {
+		for _, status := range kanbanStatuses[projectId] {
 			if status.Id == task.Status {
 				statusUpdate = append(statusUpdate, StatusUpdate{
 					TaskId:   taskId,
@@ -637,7 +661,7 @@ type Attachment struct {
 	Url  string
 }
 
-func createComment(user string, threadId string, message *discordgo.Message, content string, messageId string, attachments []*discordgo.MessageAttachment) {
+func createComment(projectId int, user string, threadId string, message *discordgo.Message, content string, messageId string, attachments []*discordgo.MessageAttachment) {
 	row, err := db.Query("SELECT task_id FROM tasks WHERE thread_id = ?", threadId)
 	if err != nil {
 		panic(err)
@@ -657,7 +681,7 @@ func createComment(user string, threadId string, message *discordgo.Message, con
 		attachmentsMessage = "\n\nAttachments:"
 	}
 	for _, attachment := range attachments {
-		uploadedAttachment := attachFile(attachment, taskId, messageId)
+		uploadedAttachment := attachFile(projectId, attachment, taskId, messageId)
 		mdType := "["
 		if strings.HasPrefix(attachment.ContentType, "image") {
 			mdType = "!["
@@ -730,15 +754,11 @@ type SortRequest struct {
 	Status  int   `json:"status_id"`
 }
 
-func sortTasks(tasks []TaskResponse, newTask int, status int) {
+func sortTasks(projectId int, tasks []TaskResponse, newTask int, status int) {
 	var sortStories []int
 	sortStories = append(sortStories, newTask)
 	for _, task := range tasks {
 		sortStories = append(sortStories, task.Id)
-	}
-	projectId, err := strconv.Atoi(os.Getenv("TAIGA_PROJECT_ID"))
-	if err != nil {
-		panic(err)
 	}
 	sortRequest := SortRequest{
 		Project: projectId,
