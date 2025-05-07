@@ -1,2 +1,48 @@
+# Environment configuration
 .env
-data/tasks.db
+.env.backup
+
+# Database files
+data/
+*.db
+*.db-journal
+*.db.backup
+
+# Build artifacts
+taiga-discord
+planka-discord
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Migration configuration (contains sensitive IDs)
+migration.json
+
+# Dependency directories
+vendor/
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Backups
+*.tar.gz
+*.zip
+backup-*/
