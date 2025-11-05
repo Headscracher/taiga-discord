@@ -60,7 +60,8 @@ func main() {
 	discord.AddHandler(changeMessageEvent)
 	discord.AddHandler(changeTopicEvent)
 	discord.AddHandler(createThreadEvent)
-	discord.Identify.Intents = discordgo.IntentGuilds | discordgo.IntentGuildMessages
+	discord.AddHandler(deleteMessageEvent)
+	discord.Identify.Intents = discordgo.IntentGuilds | discordgo.IntentGuildMessages | discordgo.IntentMessageContent
 
 	if err != nil {
 		panic(err)
@@ -227,6 +228,86 @@ func changeMessageEvent(s *discordgo.Session, m *discordgo.MessageUpdate) {
 			updateComment(commentID, m.Message, attachments)
 			deleteUnusedAttachments(m.Attachments, cardID, m.ID)
 		}
+	}
+}
+
+func deleteMessageEvent(s *discordgo.Session, m *discordgo.MessageDelete) {
+	// Check if this is a comment that needs to be deleted from Planka
+	row, err := db.Query("SELECT comment_id, planka_card_id FROM comments WHERE message_id = ?", m.ID)
+	if err != nil {
+		panic(err)
+	}
+	if row.Next() {
+		var commentID string
+		var cardID string
+		err = row.Scan(&commentID, &cardID)
+		if err != nil {
+			panic(err)
+		}
+		row.Close()
+
+		// Delete comment from Planka
+		authToken := getAuthToken()
+		req, err := http.NewRequest("DELETE", os.Getenv("PLANKA_URL")+"/api/comments/"+commentID, nil)
+		if err != nil {
+			panic(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+authToken)
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+
+		// Delete attachments from Planka first
+		attachRow, err := db.Query("SELECT id, planka_file_id FROM uploads WHERE message_id = ?", m.ID)
+		if err != nil {
+			panic(err)
+		}
+		var filesToDelete []FileToDelete
+		for attachRow.Next() {
+			var uploadID int
+			var plankaFileID string
+			err = attachRow.Scan(&uploadID, &plankaFileID)
+			if err != nil {
+				panic(err)
+			}
+			filesToDelete = append(filesToDelete, FileToDelete{
+				ID:           uploadID,
+				PlankaFileID: plankaFileID,
+			})
+		}
+		attachRow.Close()
+
+		// Delete each attachment from Planka
+		for _, fileToDelete := range filesToDelete {
+			req, err := http.NewRequest("DELETE", os.Getenv("PLANKA_URL")+"/api/attachments/"+fileToDelete.PlankaFileID, nil)
+			if err != nil {
+				panic(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+authToken)
+			client := &http.Client{}
+			resp, err := client.Do(req)
+			if err != nil {
+				panic(err)
+			}
+			resp.Body.Close()
+
+			// Delete from local database
+			_, err = db.Exec("DELETE FROM uploads WHERE id = ?", fileToDelete.ID)
+			if err != nil {
+				panic(err)
+			}
+		}
+
+		// Delete comment from local database
+		_, err = db.Exec("DELETE FROM comments WHERE message_id = ?", m.ID)
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		row.Close()
 	}
 }
 
