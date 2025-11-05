@@ -7,13 +7,11 @@ COPY . .
 RUN apt-get update && \
     apt-get -y install build-essential
 
-RUN CGO_ENABLED=1 go build -o planka_bridge main.go
-RUN CGO_ENABLED=1 go build -o planka_migrate migrate.go
+RUN CGO_ENABLED=1 go build -o planka_bridge
 
 # Set the library path and Tesseract data directory environment variables
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/usr/lib/x86_64-linux-gnu
 
-CMD ["/app/planka_migrate","/app/planka_bridge"]
 # Command to run the application
-# CMD ["/app/taiga_bridge"]
+CMD ["/app/planka_bridge"]
 
