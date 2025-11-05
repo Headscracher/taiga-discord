@@ -412,11 +412,8 @@ func attachFile(boardID string, attachment *discordgo.MessageAttachment, cardID 
 	formData := new(bytes.Buffer)
 	writer := multipart.NewWriter(formData)
 
-	part, err := writer.CreateFormFile("file", attachment.Filename)
-	if err != nil {
-		panic(err)
-	}
-	_, err = part.Write(file)
+	// Add type and name fields first
+	err = writer.WriteField("type", "file")
 	if err != nil {
 		panic(err)
 	}
@@ -426,7 +423,12 @@ func attachFile(boardID string, attachment *discordgo.MessageAttachment, cardID 
 		panic(err)
 	}
 
-	err = writer.WriteField("type", "file")
+	// Then add the file
+	part, err := writer.CreateFormFile("file", attachment.Filename)
+	if err != nil {
+		panic(err)
+	}
+	_, err = part.Write(file)
 	if err != nil {
 		panic(err)
 	}
