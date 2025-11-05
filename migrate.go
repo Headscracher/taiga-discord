@@ -289,21 +289,43 @@ func main() {
 	skippedCount := 0
 
 	fmt.Println("\n2. Migrating task references...")
+
+	// Load environment for Discord access
+	dotenv.Load()
+	discordToken := os.Getenv("DISCORD_TOKEN")
+	if discordToken == "" {
+		fmt.Println("  [ERROR] DISCORD_TOKEN not configured in .env")
+		fmt.Println("  Cannot determine which channel threads belong to.")
+		os.Exit(1)
+	}
+
+	discord, err := discordgo.New("Bot " + discordToken)
+	if err != nil {
+		fmt.Println("  [ERROR] Failed to create Discord session:", err)
+		os.Exit(1)
+	}
+
 	// Now iterate over the in-memory slice to perform updates (Lock is now released)
 	for _, task := range tasksToMigrate {
-		// Find which project this task belongs to by checking all mappings
+		// Get the thread's parent channel ID from Discord
+		channel, err := discord.Channel(task.ThreadID)
+		if err != nil {
+			fmt.Printf("  [ERROR] Task ID %d: Could not fetch Discord thread %s: %v\n", task.TaskID, task.ThreadID, err)
+			skippedCount++
+			continue
+		}
+
+		// Find which project this task belongs to by matching the parent channel ID
 		var foundMapping *ProjectMapping
 		for _, mapping := range config.Mappings {
-			// We'll use a heuristic: check if the status_id matches any of the mapped status IDs
-			// This is not perfect, but it's the best we can do without additional data
-			// In a real scenario, you might need to query Taiga API to get the project ID for each task
-			foundMapping = &mapping
-			break // For now, we'll just use the first mapping
-			// TODO: Improve this logic to properly identify which project each task belongs to
+			if mapping.DiscordChannelID == channel.ParentID {
+				foundMapping = &mapping
+				break
+			}
 		}
 
 		if foundMapping == nil {
-			fmt.Printf("  [SKIP] Task ID %d: Could not determine project mapping\n", task.TaskID)
+			fmt.Printf("  [SKIP] Task ID %d: Thread %s belongs to channel %s which has no mapping\n", task.TaskID, task.ThreadID, channel.ParentID)
 			skippedCount++
 			continue
 		}
@@ -315,14 +337,13 @@ func main() {
 			UPDATE tasks
 			SET planka_board_id = ?
 			WHERE id = ?
-		`, foundMapping.PlankaBoardID, task.ID) // Changed 'id' to 'task.ID' and used 'task' from the slice
+		`, foundMapping.PlankaBoardID, task.ID)
 
 		if err != nil {
-			// This should now succeed unless there's a different locking issue
 			fmt.Printf("  [ERROR] Task ID %d: %v\n", task.TaskID, err)
 			skippedCount++
 		} else {
-			fmt.Printf("  [OK] Task ID %d mapped to board %s\n", task.TaskID, foundMapping.PlankaBoardID)
+			fmt.Printf("  [OK] Task ID %d mapped to board %s (channel %s)\n", task.TaskID, foundMapping.PlankaBoardID, channel.ParentID)
 			migratedCount++
 		}
 	}
