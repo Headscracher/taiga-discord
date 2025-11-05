@@ -961,6 +961,7 @@ OUTER:
 		}
 		// Card moved to different list
 		card := getCard(cardID)
+    fmt.Println("Card moved to different list", cardID, card.Item.ListID)
 		list := boardLists.findByID(boardID, card.Item.ListID)
 		statusUpdate = append(statusUpdate, StatusUpdate{
 			CardID:   cardID,
