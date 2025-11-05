@@ -1,0 +1,43 @@
+{
+  "comment": "Migration configuration for converting Taiga project IDs and status slugs to Planka board IDs and list IDs",
+  "mappings": [
+    {
+      "taiga_project_id": 8,
+      "planka_board_id": "1637234192565667099",
+      "discord_channel_id": "1326828843859705897",
+      "statuses": {
+        "backlog": {
+          "taiga_slug": "reports",
+          "planka_list_id": "1637243747676718692"
+        },
+        "in_progress": {
+          "taiga_slug": "in-progress",
+          "planka_list_id": "1637243749689984615"
+        },
+        "completed": {
+          "taiga_slug": "completed",
+          "planka_list_id": "1637243750897944169"
+        }
+      }
+    },
+    {
+      "taiga_project_id": 7,
+      "planka_board_id": "1637234190116193557",
+      "discord_channel_id": "1362809185863209261",
+      "statuses": {
+        "backlog": {
+          "taiga_slug": "reports",
+          "planka_list_id": "1637238642579604771"
+        },
+        "in_progress": {
+          "taiga_slug": "in-progress",
+          "planka_list_id": "1637238647973479718"
+        },
+        "completed": {
+          "taiga_slug": "completed",
+          "planka_list_id": "1637238649886082344"
+        }
+      }
+    }
+  ]
+}

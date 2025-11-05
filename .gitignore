@@ -23,7 +23,7 @@ planka-discord
 *.out
 
 # Migration configuration (contains sensitive IDs)
-migration.json
+# migration.json
 
 # Dependency directories
 vendor/
