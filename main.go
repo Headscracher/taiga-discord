@@ -373,13 +373,13 @@ func updateComment(commentID string, message *discordgo.Message, attachments str
 	defer resp.Body.Close()
 }
 
-func (b *BoardLists) findByID(boardID string, listID string) List {
+func (b *BoardLists) findByID(boardID string, listID string) (List, bool) {
 	for _, list := range (*b)[boardID] {
 		if list.ID == listID {
-			return list
+			return list, true
 		}
 	}
-	panic("Could not find list " + listID)
+	return List{}, false
 }
 
 func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
@@ -961,8 +961,10 @@ OUTER:
 		}
 		// Card moved to different list
 		card := getCard(cardID)
-    fmt.Println("Card moved to different list", cardID, card.Item.ListID)
-		list := boardLists.findByID(boardID, card.Item.ListID)
+		list, found := boardLists.findByID(boardID, card.Item.ListID)
+		if !found {
+			continue
+		}
 		statusUpdate = append(statusUpdate, StatusUpdate{
 			CardID:   cardID,
 			ThreadID: threadID,
