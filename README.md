@@ -106,56 +106,6 @@ Example API response:
    - Read Message History
    - Attach Files
 
-## Migrating from Taiga
-
-If you're migrating from the Taiga version of this bot:
-
-1. **Backup your database**:
-```bash
-cp data/tasks.db data/tasks.db.backup
-```
-
-2. **Create migration config**:
-Copy `migration.json.example` to `migration.json` and fill in your mappings:
-```json
-{
-  "mappings": [
-    {
-      "taiga_project_id": 1,
-      "planka_board_id": "1357158568008091264",
-      "discord_channel_id": "987654321098765432",
-      "statuses": {
-        "backlog": {
-          "taiga_slug": "new",
-          "planka_list_id": "1357158568008091265"
-        },
-        "in_progress": {
-          "taiga_slug": "in-progress",
-          "planka_list_id": "1357158568008091266"
-        },
-        "completed": {
-          "taiga_slug": "done",
-          "planka_list_id": "1357158568008091267"
-        }
-      }
-    }
-  ]
-}
-```
-
-3. **Run migration**:
-```bash
-go run migrate.go
-```
-
-4. **Update your .env** file with Planka configuration
-
-5. **Important Notes**:
-   - The migration script cannot pre-populate Planka card IDs
-   - Existing Discord threads will be linked to new Planka cards on first interaction
-   - Consider manually recreating important tasks in Planka before migration
-   - Test with a backup database first
-
 ## How It Works
 
 ### Discord → Planka
@@ -207,7 +157,6 @@ The bot uses SQLite with three tables:
 ### Project Structure
 
 - `main.go`: Main application with Planka integration
-- `migrate.go`: Migration tool for Taiga → Planka transition
 - `migration.json.example`: Example migration configuration
 - `data/`: SQLite database directory
 - `.env`: Environment configuration (not in git)
@@ -224,12 +173,6 @@ go build -o planka-discord
 go run main.go
 ```
 
-### Migration Tool
-
-```bash
-go run migrate.go
-```
-
 ## Troubleshooting
 
 ### Bot not responding
@@ -241,11 +184,6 @@ go run migrate.go
 - Verify Planka credentials are correct
 - Check that board and list IDs are valid
 - Review Planka user has proper permissions
-
-### Migration issues
-- Ensure `migration.json` has correct ID mappings
-- Check that both Taiga and Planka instances are accessible
-- Verify database backup before migration
 
 ### Database errors
 - Ensure `data/` directory exists
