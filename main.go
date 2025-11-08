@@ -407,7 +407,7 @@ func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
 		// This is the first message - create a new card
 		defaultListID := os.Getenv(boardID + "_BACKLOG")
 		cards := getCards(defaultListID)
-		cardID := createCard(boardID, defaultListID, t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID)
+		cardID := createCard(boardID, defaultListID, t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID, s)
 		sortCards(defaultListID, cards, cardID)
 
 		// Handle attachments
@@ -433,7 +433,7 @@ func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
 		// Treat as first message and create card
 		defaultListID := os.Getenv(boardID + "_BACKLOG")
 		cards := getCards(defaultListID)
-		cardID := createCard(boardID, defaultListID, t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID)
+		cardID := createCard(boardID, defaultListID, t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID, s)
 		sortCards(defaultListID, cards, cardID)
 
 		// Handle attachments
@@ -592,7 +592,7 @@ OUTER:
 
 type CreateCardRequest struct {
 	Type        string `json:"type"`
-	Position    int    `json:"position"`
+	Position    float64    `json:"position"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
@@ -600,7 +600,7 @@ type CreateCardRequest struct {
 type CardResponse struct {
 	Item struct {
 		ID       string `json:"id"`
-		Position int    `json:"position"`
+		Position float64    `json:"position"`
 		Name     string `json:"name"`
 		ListID   string `json:"listId"`
 	} `json:"item"`
@@ -608,7 +608,7 @@ type CardResponse struct {
 
 type CardItem struct {
 	ID       string `json:"id"`
-	Position int    `json:"position"`
+	Position float64    `json:"position"`
 	Name     string `json:"name"`
 }
 
@@ -644,7 +644,7 @@ func getCards(listID string) []CardItem {
 	return cardsResponse.Items
 }
 
-func createCard(boardID string, listID string, user string, title string, description string, threadID string, messageID string) string {
+func createCard(boardID string, listID string, user string, title string, description string, threadID string, messageID string, discord *discordgo.Session) string {
 	authToken := getAuthToken()
 
 	card := CreateCardRequest{
@@ -680,6 +680,9 @@ func createCard(boardID string, listID string, user string, title string, descri
 	if err != nil {
 		panic(err)
 	}
+
+  go initializeTaskForAI(cardResponse.Item.ID, boardID, threadID, title, description, discord)
+  
 	return cardResponse.Item.ID
 }
 
@@ -991,4 +994,64 @@ OUTER:
 			}
 		}
 	}
+}
+
+type AIResponse struct {
+  Message *string `json:"message,omitempty"`
+  ErrorMessage *string `json:"error,omitempty"`
+  Url *string `json:"url,omitempty"`
+}
+
+func initializeTaskForAI (taskId string, boardId string, threadId string, title string, description string, discord *discordgo.Session ) {
+  aiAssistantEndpoint := os.Getenv("AI_AGENT_ENDPOINT");
+  if aiAssistantEndpoint == "" {
+    return
+  }
+  
+  body, err := json.Marshal(map[string]string{
+    "task_id": taskId,
+    "board_id": boardId,
+    "title": title,
+    "description": description,
+  })
+	if err != nil {
+    return
+	}
+
+	req, err := http.NewRequest("POST", aiAssistantEndpoint, bytes.NewBuffer(body))
+	if err != nil {
+    return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-token", os.Getenv("AI_AGENT_API_TOKEN"))
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+    return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		fmt.Printf("Error: API returned status %d: %s\n", resp.StatusCode, string(bodyBytes))
+		return
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+    return
+	}
+	var response AIResponse
+	err = json.Unmarshal(bodyBytes, &response)
+	if err != nil {
+		fmt.Printf("Failed to parse JSON response: %v\n", err)
+    return
+	}
+  if response.ErrorMessage != nil {
+    println(*response.ErrorMessage)
+  }
+  if response.Message != nil && *response.Message == "success" {
+    discord.ChannelMessageSend(threadId, "The AI assistant has prepared a PR for this task: "+*response.Url)
+  }
 }
