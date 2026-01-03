@@ -681,7 +681,9 @@ func createCard(boardID string, listID string, user string, title string, descri
 		panic(err)
 	}
 
-  go initializeTaskForAI(cardResponse.Item.ID, boardID, threadID, title, description, discord)
+  discord.ChannelMessageSend(threadID, "Created a new task in Planka: [" +cardResponse.Item.Name + "](<" + os.Getenv("PLANKA_URL") + "/cards/" + cardResponse.Item.ID + ">)")
+
+  // go initializeTaskForAI(cardResponse.Item.ID, boardID, threadID, title, description, discord)
   
 	return cardResponse.Item.ID
 }
