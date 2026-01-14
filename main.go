@@ -992,6 +992,16 @@ OUTER:
 			}
 			_, err = discord.ChannelEdit(update.ThreadID, edit)
 			if err != nil {
+        var restError *discordgo.RESTError
+        if errors.As(err, &restError) {
+          if restError.Message.Message == "Unknown Channel" {
+            _, err = db.Exec("DELETE FROM tasks WHERE planka_card_id = ?", update.CardID)
+            if err != nil {
+              panic(err)
+            }
+            continue
+          }
+        }
 				panic(err)
 			}
 		}
