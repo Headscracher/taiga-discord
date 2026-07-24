@@ -1002,7 +1002,8 @@ OUTER:
             continue
           }
         }
-				panic(err)
+        fmt.Printf("Failed updating thread: %s\n", update.ThreadID)
+        panic(err)
 			}
 		}
 	}
