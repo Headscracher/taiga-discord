@@ -49,10 +49,10 @@ go build
 | `PLANKA_USERNAME` | Planka Bot Account Username/Email | `bot@example.com` |
 | `PLANKA_PASSWORD` | Planka Bot Account Password | `secure_password` |
 | `PLANKA_BOARDS` | Comma-separated list of Planka Board IDs | `1234567890123456,9876543210987654` |
-| `[BOARD_ID]_CHANNEL_ID` | Discord Forum Channel ID for each Board | `1234567890123456_CHANNEL_ID=987654321098765432` |
-| `[BOARD_ID]_BACKLOG` | Planka List ID for Backlog status | `1234567890123456_BACKLOG=1357924680246802` |
-| `[BOARD_ID]_IN_PROGRESS` | Planka List ID for In Progress status | `1234567890123456_IN_PROGRESS=2468135791357913` |
-| `[BOARD_ID]_COMPLETED` | Planka List ID for Completed status | `1234567890123456_COMPLETED=3691482570246802` |
+| `ENV_[BOARD_ID]_CHANNEL_ID` | Discord Forum Channel ID for each Board | `1234567890123456_CHANNEL_ID=987654321098765432` |
+| `ENV_[BOARD_ID]_BACKLOG` | Planka List ID for Backlog status | `1234567890123456_BACKLOG=1357924680246802` |
+| `ENV_[BOARD_ID]_IN_PROGRESS` | Planka List ID for In Progress status | `1234567890123456_IN_PROGRESS=2468135791357913` |
+| `ENV_[BOARD_ID]_COMPLETED` | Planka List ID for Completed status | `1234567890123456_COMPLETED=3691482570246802` |
 
 ### Example .env File
 

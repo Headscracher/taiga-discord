@@ -43,13 +43,13 @@ func main() {
 	boards := strings.Split(os.Getenv("PLANKA_BOARDS"), ",")
 	for _, board := range boards {
 		boardID := strings.TrimSpace(board)
-		channelID := os.Getenv(boardID + "_CHANNEL_ID")
+		channelID := os.Getenv( "ENV_" + boardID + "_CHANNEL_ID")
 		channelBoards[channelID] = boardID
 
 		var lists []List
-		lists = append(lists, List{Name: "Backlog", ID: os.Getenv(boardID + "_BACKLOG")})
-		lists = append(lists, List{Name: "In Progress", ID: os.Getenv(boardID + "_IN_PROGRESS")})
-		lists = append(lists, List{Name: "Completed", ID: os.Getenv(boardID + "_COMPLETED")})
+		lists = append(lists, List{Name: "Backlog", ID: os.Getenv("ENV_" + boardID + "_BACKLOG")})
+		lists = append(lists, List{Name: "In Progress", ID: os.Getenv("ENV_" + boardID + "_IN_PROGRESS")})
+		lists = append(lists, List{Name: "Completed", ID: os.Getenv("ENV_" + boardID + "_COMPLETED")})
 		boardLists[boardID] = lists
 
 		// Verify lists exist in Planka
