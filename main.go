@@ -405,7 +405,7 @@ func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
 
 	if !hasExistingTask {
 		// This is the first message - create a new card
-		defaultListID := os.Getenv(boardID + "_BACKLOG")
+		defaultListID := os.Getenv("ENV_" + boardID + "_BACKLOG")
 		cards := getCards(defaultListID)
 		cardID := createCard(boardID, defaultListID, t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID, s)
 		sortCards(defaultListID, cards, cardID)
@@ -431,7 +431,7 @@ func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
 	} else {
 		// Edge case: task exists but no card ID yet (shouldn't happen normally)
 		// Treat as first message and create card
-		defaultListID := os.Getenv(boardID + "_BACKLOG")
+		defaultListID := os.Getenv("ENV_" + boardID + "_BACKLOG")
 		cards := getCards(defaultListID)
 		cardID := createCard(boardID, defaultListID, t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID, s)
 		sortCards(defaultListID, cards, cardID)
