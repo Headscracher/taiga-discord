@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sort"
@@ -406,7 +407,7 @@ func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
 	if !hasExistingTask {
 		// This is the first message - create a new card
 		defaultListID := os.Getenv("ENV_" + boardID + "_BACKLOG")
-		cards := getCards(defaultListID)
+		cards := getAllCards(defaultListID)
 		cardID := createCard(boardID, defaultListID, t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID, s)
 		sortCards(defaultListID, cards, cardID)
 
@@ -432,7 +433,7 @@ func createThreadEvent(s *discordgo.Session, t *discordgo.MessageCreate) {
 		// Edge case: task exists but no card ID yet (shouldn't happen normally)
 		// Treat as first message and create card
 		defaultListID := os.Getenv("ENV_" + boardID + "_BACKLOG")
-		cards := getCards(defaultListID)
+		cards := getAllCards(defaultListID)
 		cardID := createCard(boardID, defaultListID, t.Author.GlobalName, channel.Name, t.Content, channel.ID, t.ID, s)
 		sortCards(defaultListID, cards, cardID)
 
@@ -610,15 +611,48 @@ type CardItem struct {
 	ID       string `json:"id"`
 	Position float64    `json:"position"`
 	Name     string `json:"name"`
+  ListChangedAt string `json:"listChangedAt"` 
 }
 
 type CardsListResponse struct {
 	Items []CardItem `json:"items"`
 }
 
-func getCards(listID string) []CardItem {
+func getAllCards(listID string) []CardItem {
+  var cardItems []CardItem
+  var lastCardResponse []CardItem = getCards(listID, nil)
+  cardItems = append(cardItems, lastCardResponse...)
+  var paginationData PaginationData = PaginationData{}
+  
+  for len(lastCardResponse) == 50 {
+    paginationData.Id = lastCardResponse[len(lastCardResponse)-1].ID
+    paginationData.ListChangedAt = lastCardResponse[len(lastCardResponse)-1].ListChangedAt
+    lastCardResponse = getCards(listID, &paginationData)
+    cardItems = append(cardItems, lastCardResponse...)
+  }
+	// Sort by position
+
+	sort.Slice(cardItems, func(i, j int) bool {
+		return cardItems[i].Position < cardItems[j].Position
+	})
+
+  return cardItems
+}
+
+type PaginationData struct {
+  ListChangedAt string
+  Id string 
+}
+
+func getCards(listID string, paginationData *PaginationData) []CardItem {
 	authToken := getAuthToken()
-	req, err := http.NewRequest("GET", os.Getenv("PLANKA_URL")+"/api/lists/"+listID+"/cards", nil)
+  q := url.Values{}
+  if paginationData != nil {
+    q.Set("before[listChangedAt]", paginationData.ListChangedAt)
+    q.Set("before[id]", paginationData.Id)
+  }
+
+	req, err := http.NewRequest("GET", os.Getenv("PLANKA_URL")+"/api/lists/"+listID+"/cards?" + q.Encode(), nil)
 	if err != nil {
 		panic(err)
 	}
@@ -628,7 +662,6 @@ func getCards(listID string) []CardItem {
 	if err != nil {
 		panic(err)
 	}
-	defer resp.Body.Close()
 
 	var cardsResponse CardsListResponse
 	err = json.NewDecoder(resp.Body).Decode(&cardsResponse)
@@ -636,10 +669,6 @@ func getCards(listID string) []CardItem {
 		panic(err)
 	}
 
-	// Sort by position
-	sort.Slice(cardsResponse.Items, func(i, j int) bool {
-		return cardsResponse.Items[i].Position < cardsResponse.Items[j].Position
-	})
 
 	return cardsResponse.Items
 }
@@ -945,7 +974,7 @@ func getCard(cardID string) CardDetailsResponse {
 }
 
 func checkCardList(boardID string, listID string, listName string, discord *discordgo.Session) {
-	cards := getCards(listID)
+	cards := getAllCards(listID)
 	row, err := db.Query("SELECT planka_card_id, thread_id FROM tasks WHERE planka_list_id = ?", listID)
 	if err != nil {
 		panic(err)
